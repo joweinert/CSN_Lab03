@@ -1,13 +1,22 @@
 import rustworkx as rx
+import networkx as nx
 import random
 from itertools import combinations
 
 
-def erdos_renyi_null_model(N, E, seed=None) -> rx.PyGraph:
+def erdos_renyi_null_model_rx(N, E, seed=None) -> rx.PyGraph:
     """https://www.rustworkx.org/apiref/rustworkx.undirected_gnm_random_graph.html
 
     Generate an undirected Erdős-Rényi graph with N nodes and E edges."""
     return rx.undirected_gnm_random_graph(N, E, seed=seed)
+
+
+def erdos_renyi_null_model_nx(N, E, seed=None) -> nx.Graph:
+    """Generate an undirected Erdős-Rényi graph with N nodes and E edges.
+
+    RUSTWORKX VERSION IS RECOMMENDED FOR PERFORMANCE.
+    """
+    return nx.gnm_random_graph(N, E, seed=seed, directed=False)
 
 
 def edge_switching_null_model(edges: list[tuple[int, int]], N, E, Q=20, seed=None):

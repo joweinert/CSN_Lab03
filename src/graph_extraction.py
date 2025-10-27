@@ -78,13 +78,24 @@ def save_adjacency_list(
     edges: set[tuple[str, str]],
     lang: str = "en",
     *,
+    int_optimize: bool = False,
     compresslevel: int = 6,
     directed: bool = False,
     output_folder: str = "./data/dependency_networks/adjacency_lists",
 ):
+    if int_optimize:
+        output_folder += "_int_optimize"
+        node_to_id = {n: i for i, n in enumerate(sorted(nodes))}
+        edges = {(node_to_id[u], node_to_id[v]) for u, v in edges}
+
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
-    path = output_folder + f"/{LANG_DICT[lang]}_dependency_network.txt.gz"
+    filename_base = f"/{LANG_DICT[lang]}_dependency_network"
+    file_extension = ".txt.gz"
+    if int_optimize:
+        filename = filename_base + "_adjacency_list"
+    else:
+        filename = filename_base
 
     adjacency = {n: set() for n in nodes}
     for u, v in edges:
@@ -95,7 +106,7 @@ def save_adjacency_list(
     N = len(nodes)
     E = len(edges)
     with gzip.open(
-        path,
+        output_folder + filename + file_extension,
         "wt",
         encoding="utf-8",
         compresslevel=compresslevel,
@@ -104,6 +115,11 @@ def save_adjacency_list(
         for n in sorted(adjacency.keys()):
             neighbors = "\t".join(sorted(adjacency[n]))
             f.write(f"{n}\t{neighbors}\n")
+    if not int_optimize:
+        return
+    save_node_mapping(
+        output_folder, filename_base, file_extension, node_to_id, compresslevel
+    )
 
 
 def save_edge_list(
@@ -145,6 +161,23 @@ def save_edge_list(
     if not int_optimize:
         return
 
+    save_node_mapping(
+        output_folder, filename_base, file_extension, node_to_id, compresslevel
+    )
+    # filename = filename_base + "_node_to_id"
+    # with gzip.open(
+    #     output_folder + filename + file_extension,
+    #     mode="wt",
+    #     encoding="utf-8",
+    #     compresslevel=compresslevel,
+    # ) as f:
+    #     for n, i in sorted(node_to_id.items(), key=lambda x: x[1]):
+    #         f.write(f"{i}\t{n}\n")
+
+
+def save_node_mapping(
+    output_folder, filename_base, file_extension, node_to_id, compresslevel=6
+):
     filename = filename_base + "_node_to_id"
     with gzip.open(
         output_folder + filename + file_extension,
@@ -180,6 +213,36 @@ def load_edges(
             edges.add((u, v))
 
     return edges
+
+
+def load_adjacency_list(
+    lang: str = "en",
+    *,
+    int_optimize: bool = False,
+    input_folder: str = "./data/dependency_networks/adjacency_lists",
+) -> dict[str, set[str]]:
+    filename = f"/{LANG_DICT[lang]}_dependency_network"
+    file_extension = ".txt.gz"
+    if int_optimize:
+        input_folder += "_int_optimize"
+        filename += "_adjacency_list"
+    path = input_folder + filename + file_extension
+
+    adjacency = {}
+    with gzip.open(path, mode="rt", encoding="utf-8") as f:
+        first_line = f.readline()
+        N, E = map(int, first_line.strip().split("\t"))
+        for line in f:
+            parts = line.strip().split("\t")
+            node = parts[0]
+            if int_optimize:
+                node = int(node)
+                neighbors = {int(neigh) for neigh in parts[1:]}
+            else:
+                neighbors = set(parts[1:])
+            adjacency[node] = neighbors
+
+    return adjacency
 
 
 def get_network_summary(
