@@ -3,13 +3,11 @@ import math
 import rustworkx as rx
 import networkx as nx
 import joblib
-from contextlib import nullcontext
-from tqdm.auto import tqdm
-from tqdm_joblib import tqdm_joblib
 import random
 import numpy as np
 
-from src.utils import bcolors
+from src.graph_extraction import load_edges, get_network_summary
+from src.utils import bcolors, LANG_DICT, fmt_simulation_results
 from src.null_model import (
     erdos_renyi_null_model_rx,
     erdos_renyi_null_model_nx,
@@ -25,7 +23,9 @@ NULL_MODELS = {
 
 # By far the fastest -- however the assignment asks for harmonic closeness
 def classic_closeness(G: rx.PyGraph) -> np.ndarray:
-    return np.fromiter(rx.closeness_centrality(G).values(), dtype=float)
+    return np.fromiter(
+        rx.closeness_centrality(G).values(), dtype=float, count=G.num_nodes()
+    )
 
 
 def dijkstra_all_pairs_closeness(G: rx.PyGraph) -> np.ndarray:
@@ -33,15 +33,21 @@ def dijkstra_all_pairs_closeness(G: rx.PyGraph) -> np.ndarray:
     dist_dict = rx.all_pairs_dijkstra_path_lengths(G, edge_cost_fn=lambda _: 1)
     closeness = np.zeros(N)
     for u, dists in dist_dict.items():
-        inv_dists = 1 / np.fromiter(dists.values(), dtype=float)
+        inv_dists = 1 / np.fromiter(dists.values(), dtype=float, count=len(dists))
         closeness[u] = (1 / (N - 1)) * inv_dists.sum()
+        # s = 0.0
+        # for d in dists.values():
+        #     s += 1.0 / d
+        # closeness[u] = s / (N - 1)
     return closeness
 
 
 def nx_closeness(G: nx.Graph) -> np.ndarray:
     N = G.number_of_nodes()
     # nx.harmonic_centrality gives sum of reciprocals pero no normalization
-    closeness = np.fromiter(nx.harmonic_centrality(G).values(), float) / (N - 1)
+    closeness = np.fromiter(nx.harmonic_centrality(G).values(), float, count=N) / (
+        N - 1
+    )
     return closeness
 
 
@@ -170,7 +176,6 @@ def simulate_closeness_significance(
     null_model: str = "ER",
     closeness_fn: str = "classic",
     seed: int = None,
-    benchmark: bool = False,
     early_stop_batch_size: int = 500,
 ) -> tuple[float, float, float]:
 
@@ -196,33 +201,27 @@ def simulate_closeness_significance(
         base_params.update({"edges": list(edges), "Q": Q})
 
     base_seed = random.randint(0, 2**32 - 1) if seed is None else seed
-    pbar_ctx = (
-        tqdm_joblib(tqdm(total=T, desc="Simulations", leave=False, position=0))
-        if benchmark
-        else nullcontext()
-    )
 
-    with joblib.parallel_config(backend="loky", inner_max_num_threads=1), pbar_ctx:
-        out = joblib.Parallel(n_jobs=-1)(
-            joblib.delayed(evaluate_one)(
-                NULL_MODELS[null_model],
-                CLOSENESS_FUNCTIONS[closeness_fn],
-                {**base_params, "seed": base_seed + i},
-                orig_avg_closeness=(
-                    avg_orig_closeness if closeness_fn == "early_stopping" else None
-                ),
-                early_stop_batch_size=early_stop_batch_size,
+    res = np.zeros(T)
+    for i in range(T):
+        null_G = NULL_MODELS[null_model](**{**base_params, "seed": base_seed + i})
+
+        # comparison mode -> full closeness is not computed only x_NH >= orig_avg_closeness by bounding
+        if closeness_fn == "early_stopping":
+            res[i] = closeness_fn(
+                null_G, avg_orig_closeness, batch_size=early_stop_batch_size
             )
-            for i in range(T)
-        )
+            continue
+
+        res[i] = CLOSENESS_FUNCTIONS[closeness_fn](null_G).sum() / N
 
     if closeness_fn == "early_stopping":
         # in this case out is not a series of avg closeness but bools -> xNH >= avg_orig_closeness as the actual closeness is not computed
-        f_xNH = sum(1 for x in out if x)
+        f_xNH = sum(1 for x in res if x)
         return f_xNH / T, avg_orig_closeness, None, None
 
-    f_xNH = sum(1 for x in out if x >= avg_orig_closeness)
-    return f_xNH / T, avg_orig_closeness, np.mean(out), np.std(out)
+    f_xNH = sum(1 for x in res if x >= avg_orig_closeness)
+    return f_xNH / T, avg_orig_closeness, np.mean(res), np.std(res)
 
 
 def evaluate_one(
@@ -246,38 +245,67 @@ def evaluate_one(
     return avg_closeness
 
 
+def run_one_language(lang, null_models_to_run, T, Q, closeness_fn, seed):
+    results = defaultdict(str)
+    edges = load_edges(lang=lang, int_optimize=True)
+    N, E, *_ = get_network_summary(lang)
+    for nm in null_models_to_run:
+        results[nm] = simulate_closeness_significance(
+            edges,
+            N,
+            E,
+            T=T,
+            Q=Q,
+            null_model=nm,
+            closeness_fn=closeness_fn,
+            seed=seed,
+        )
+    print(fmt_simulation_results(lang, results))
+
+
 if __name__ == "__main__":
-    from src.graph_extraction import load_edges, get_network_summary
-    from src.utils import LANG_DICT
-
+    import argparse
     import time
+    import os
 
-    def benchmark_closeness_fns(closeness_fn: str):
-        outs = []
-        for lang in LANG_DICT.keys():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--T", type=int, default=100)
+    parser.add_argument("--Q", type=int, default=20)
+    parser.add_argument(
+        "--null_model", type=str, choices=["ER", "ES", "BOTH"], default="BOTH"
+    )
+    parser.add_argument(
+        "--closeness_fn",
+        type=str,
+        choices=list(CLOSENESS_FUNCTIONS.keys()),
+        default="dijkstra_all_pairs",
+    )
+    parser.add_argument("--seed", type=int, default=0)
 
-            edges = load_edges(lang=lang, int_optimize=True)
-            N, E, _, _ = get_network_summary(lang)
-            print(f"Processing {lang} with {N} nodes and {E} edges")
+    args = parser.parse_args()
 
-            outs.append(
-                simulate_closeness_significance(
-                    edges,
-                    N,
-                    E,
-                    T=10,
-                    null_model="ER",
-                    closeness_fn=closeness_fn,
-                    seed=42,
-                )
+    header = f"{'Language':<15}{'nullmodel':<15}{'pvalue':<15}{'avg_orig_closeness':<25}{'avg_null_closeness':<25}{'std_null_closeness':<25}\n{'_'*120}"
+    print(header)
+
+    null_models_to_run = (
+        ["ER", "ES"] if args.null_model == "BOTH" else [args.null_model]
+    )
+
+    num_cpus = joblib.cpu_count() or 1
+    n_jobs_lang = max(1, int(np.ceil(np.sqrt(num_cpus))))
+    rayon_threads = max(1, int(np.floor(num_cpus / n_jobs_lang)))
+    os.environ["RAYON_NUM_THREADS"] = str(rayon_threads)
+
+    langs = list(LANG_DICT.keys())
+
+    t0 = time.perf_counter()
+    with joblib.parallel_config(n_jobs=n_jobs_lang):
+        joblib.Parallel()(
+            joblib.delayed(run_one_language)(
+                lang, null_models_to_run, args.T, args.Q, args.closeness_fn, args.seed
             )
-        return outs
+            for lang in langs
+        )
+    t1 = time.perf_counter()
 
-    def benchmark(fn: callable):
-        t0 = time.perf_counter()
-        out = fn()
-        return time.perf_counter() - t0, out
-
-    for fn_name in CLOSENESS_FUNCTIONS.keys():
-        duration, _ = benchmark(lambda: benchmark_closeness_fns(fn_name))
-        print(f"{fn_name} benchmark duration: {duration:.4f} seconds")
+    print(f"\nTotal duration: {t1 - t0:.4f} seconds")
