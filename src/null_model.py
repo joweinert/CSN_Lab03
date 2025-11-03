@@ -1,17 +1,20 @@
+from typing import Tuple, Optional
+
+Edge = Tuple[int, int]
+
 import rustworkx as rx
 import networkx as nx
 import random
-from itertools import combinations
 
 
-def erdos_renyi_null_model_rx(N, E, seed=None) -> rx.PyGraph:
+def erdos_renyi_null_model_rx(N: int, E: int, seed: Optional[int] = None) -> rx.PyGraph:
     """https://www.rustworkx.org/apiref/rustworkx.undirected_gnm_random_graph.html
 
     Generate an undirected Erdős-Rényi graph with N nodes and E edges."""
     return rx.undirected_gnm_random_graph(N, E, seed=seed)
 
 
-def erdos_renyi_null_model_nx(N, E, seed=None) -> nx.Graph:
+def erdos_renyi_null_model_nx(N: int, E: int, seed: Optional[int] = None) -> nx.Graph:
     """Generate an undirected Erdős-Rényi graph with N nodes and E edges.
 
     RUSTWORKX VERSION IS RECOMMENDED FOR PERFORMANCE.
@@ -19,7 +22,9 @@ def erdos_renyi_null_model_nx(N, E, seed=None) -> nx.Graph:
     return nx.gnm_random_graph(N, E, seed=seed, directed=False)
 
 
-def edge_switching_null_model(edges: list[tuple[int, int]], N, E, Q=20, seed=None):
+def edge_switching_null_model(
+    edges: list[Edge], N: int, E: int, Q: int = 20, seed: Optional[int] = None
+):
     assert len(edges) == E, "Number of edges does not match E parameter"
     rng = random.Random(seed)
 

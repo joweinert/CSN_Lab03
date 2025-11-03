@@ -2,6 +2,7 @@ import os
 import gzip
 
 from src.utils import LANG_DICT
+from typing import Set, Tuple, List
 
 
 def parse_ud_conllu(
@@ -12,7 +13,7 @@ def parse_ud_conllu(
     rm_self_loops: bool = True,
     rm_punct: bool = True,
 ):
-    def prep_line(line: str, sentence_id: int) -> bool:
+    def prep_line(line: str, sentence_id: int) -> Tuple[List[str] | None, int]:
         if not line.strip():
             sentence_id += 1
             return None, sentence_id
@@ -32,7 +33,7 @@ def parse_ud_conllu(
 
     with open(data_folder + f"/{lang}_pud-ud-test.conllu", "r", encoding="utf-8") as f:
 
-        lines = f.readlines()
+        lines: List[str] = f.readlines()
         id_to_word_map = {}
         sentence_id = 0
         # mapping from (sentence_id, word_id) to word form or lemma

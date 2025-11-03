@@ -5,6 +5,11 @@ import networkx as nx
 import joblib
 import random
 import numpy as np
+from typing import Dict, Callable, List, Optional, Set, Tuple
+from numpy.typing import NDArray
+
+ArrF64 = NDArray[np.float64]
+Edge = Tuple[int, int]
 
 from src.graph_extraction import load_edges, get_network_summary
 from src.utils import bcolors, LANG_DICT, fmt_simulation_results
@@ -14,7 +19,7 @@ from src.null_model import (
     edge_switching_null_model,
 )
 
-NULL_MODELS = {
+NULL_MODELS: Dict[str, Callable[..., object]] = {
     "ER": erdos_renyi_null_model_rx,
     "ER_NX": erdos_renyi_null_model_nx,
     "ES": edge_switching_null_model,
@@ -22,27 +27,23 @@ NULL_MODELS = {
 
 
 # By far the fastest -- however the assignment asks for harmonic closeness
-def classic_closeness(G: rx.PyGraph) -> np.ndarray:
+def classic_closeness(G: rx.PyGraph) -> ArrF64:
     return np.fromiter(
         rx.closeness_centrality(G).values(), dtype=float, count=G.num_nodes()
     )
 
 
-def dijkstra_all_pairs_closeness(G: rx.PyGraph) -> np.ndarray:
+def dijkstra_all_pairs_closeness(G: rx.PyGraph) -> ArrF64:
     N = G.num_nodes()
     dist_dict = rx.all_pairs_dijkstra_path_lengths(G, edge_cost_fn=lambda _: 1)
     closeness = np.zeros(N)
     for u, dists in dist_dict.items():
         inv_dists = 1 / np.fromiter(dists.values(), dtype=float, count=len(dists))
         closeness[u] = (1 / (N - 1)) * inv_dists.sum()
-        # s = 0.0
-        # for d in dists.values():
-        #     s += 1.0 / d
-        # closeness[u] = s / (N - 1)
     return closeness
 
 
-def nx_closeness(G: nx.Graph) -> np.ndarray:
+def nx_closeness(G: nx.Graph) -> ArrF64:
     N = G.number_of_nodes()
     # nx.harmonic_centrality gives sum of reciprocals pero no normalization
     closeness = np.fromiter(nx.harmonic_centrality(G).values(), float, count=N) / (
@@ -74,7 +75,7 @@ def early_stopping_closeness(
         parent_dists = rx.dijkstra_shortest_path_lengths(
             G, p, edge_cost_fn=lambda _: 1.0
         )
-        closeness_i[p] = sum(1.0 / d for d in parent_dists.values() if d > 0) / (N - 1)
+        closeness_i[p] = sum(1.0 / d for d in parent_dists.values()) / (N - 1)
         all_nodes.discard(p)
         processed.add(p)
         M += 1
@@ -124,7 +125,7 @@ def early_stopping_closeness(
     return eval_bounds() == "gt"
 
 
-CLOSENESS_FUNCTIONS = {
+CLOSENESS_FUNCTIONS: Dict[str, Callable[..., object]] = {
     "classic": classic_closeness,
     "dijkstra_all_pairs": dijkstra_all_pairs_closeness,
     "nx": nx_closeness,
@@ -133,7 +134,7 @@ CLOSENESS_FUNCTIONS = {
 
 
 def _validate_params(
-    null_model: str, closeness_fn: str, Q: int = None, E: int = None
+    null_model: str, closeness_fn: str, Q: Optional[int] = None, E: Optional[int] = None
 ) -> tuple[str, str]:
     if not null_model in NULL_MODELS:
         raise ValueError(
@@ -167,17 +168,17 @@ def _validate_params(
 
 
 def simulate_closeness_significance(
-    edges: set[tuple[str, str]],
+    edges: List[Edge],
     N: int,
     E: int,
     *,
-    Q: int = None,
+    Q: Optional[int] = None,
     T: int = 10000,
     null_model: str = "ER",
     closeness_fn: str = "classic",
-    seed: int = None,
+    seed: Optional[int] = None,
     early_stop_batch_size: int = 500,
-) -> tuple[float, float, float]:
+) -> Tuple[float, float, Optional[float], Optional[float]]:
 
     null_model, closeness_fn = _validate_params(null_model, closeness_fn, Q, E)
 
@@ -198,17 +199,19 @@ def simulate_closeness_significance(
 
     base_params = {"N": N, "E": E}
     if null_model == "ES":
-        base_params.update({"edges": list(edges), "Q": Q})
+        base_params.update({"edges": edges, "Q": Q})
 
     base_seed = random.randint(0, 2**32 - 1) if seed is None else seed
 
-    res = np.zeros(T)
+    res = np.zeros(T, dtype=np.float64)
     for i in range(T):
-        null_G = NULL_MODELS[null_model](**{**base_params, "seed": base_seed + i})
+        params = dict(base_params)
+        params["seed"] = base_seed + i
+        null_G = NULL_MODELS[null_model](**params)
 
         # comparison mode -> full closeness is not computed only x_NH >= orig_avg_closeness by bounding
         if closeness_fn == "early_stopping":
-            res[i] = closeness_fn(
+            res[i] = CLOSENESS_FUNCTIONS[closeness_fn](
                 null_G, avg_orig_closeness, batch_size=early_stop_batch_size
             )
             continue
@@ -217,37 +220,16 @@ def simulate_closeness_significance(
 
     if closeness_fn == "early_stopping":
         # in this case out is not a series of avg closeness but bools -> xNH >= avg_orig_closeness as the actual closeness is not computed
-        f_xNH = sum(1 for x in res if x)
+        f_xNH = int(res.sum())
         return f_xNH / T, avg_orig_closeness, None, None
 
-    f_xNH = sum(1 for x in res if x >= avg_orig_closeness)
-    return f_xNH / T, avg_orig_closeness, np.mean(res), np.std(res)
-
-
-def evaluate_one(
-    null_model: callable,
-    closeness_fn: callable,
-    null_params: dict,
-    orig_avg_closeness: float = None,
-    early_stop_batch_size: int = 500,
-) -> float:
-    null_G = null_model(**null_params)
-
-    # comparison mode -> full closeness is not computed only x_NH >= orig_avg_closeness by bounding
-    if orig_avg_closeness is not None:
-        is_greater = closeness_fn(
-            null_G, orig_avg_closeness, batch_size=early_stop_batch_size
-        )
-        return is_greater
-
-    closeness: np.ndarray = closeness_fn(null_G)
-    avg_closeness = closeness.sum() / null_params["N"]
-    return avg_closeness
+    f_xNH = int(np.count_nonzero(res >= avg_orig_closeness))
+    return f_xNH / T, avg_orig_closeness, float(res.mean()), float(res.std())
 
 
 def run_one_language(lang, null_models_to_run, T, Q, closeness_fn, seed):
     results = defaultdict(str)
-    edges = load_edges(lang=lang, int_optimize=True)
+    edges: List[Edge] = list(load_edges(lang=lang, int_optimize=True))
     N, E, *_ = get_network_summary(lang)
     for nm in null_models_to_run:
         results[nm] = simulate_closeness_significance(
@@ -260,7 +242,7 @@ def run_one_language(lang, null_models_to_run, T, Q, closeness_fn, seed):
             closeness_fn=closeness_fn,
             seed=seed,
         )
-    print(fmt_simulation_results(lang, results))
+    return fmt_simulation_results(lang, results)
 
 
 if __name__ == "__main__":
@@ -295,12 +277,15 @@ if __name__ == "__main__":
     n_jobs_lang = max(1, int(np.ceil(np.sqrt(num_cpus))))
     rayon_threads = max(1, int(np.floor(num_cpus / n_jobs_lang)))
     os.environ["RAYON_NUM_THREADS"] = str(rayon_threads)
+    print(
+        f"Using {n_jobs_lang} parallel jobs for languages and {rayon_threads} threads for RustworkX (total {n_jobs_lang * rayon_threads} CPU cores)"
+    )
 
     langs = list(LANG_DICT.keys())
 
     t0 = time.perf_counter()
     with joblib.parallel_config(n_jobs=n_jobs_lang):
-        joblib.Parallel()(
+        lines = joblib.Parallel()(
             joblib.delayed(run_one_language)(
                 lang, null_models_to_run, args.T, args.Q, args.closeness_fn, args.seed
             )
@@ -308,4 +293,5 @@ if __name__ == "__main__":
         )
     t1 = time.perf_counter()
 
+    print("\n".join(lines))
     print(f"\nTotal duration: {t1 - t0:.4f} seconds")
